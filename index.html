@@ -141,6 +141,47 @@
   #startCpuBtn.active{opacity:1; pointer-events:auto;}
   #startCpuBtn:active{transform:scale(.97);}
 
+  .difficulty-picker{
+    margin-top:22px;
+    width:100%; max-width:480px;
+    text-align:center;
+  }
+  .difficulty-title{
+    color:#bcb4a2;
+    font-size:.78rem;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .difficulty-options{
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0,1fr));
+    gap:8px;
+  }
+  .difficulty{
+    padding:11px 9px;
+    border:1px solid rgba(201,162,39,.35);
+    border-radius:10px;
+    color:#b8af99;
+    background:rgba(255,255,255,.035);
+    font:inherit;
+    font-size:.92rem;
+    cursor:pointer;
+    transition:background .2s, border-color .2s, color .2s;
+  }
+  .difficulty:hover{border-color:var(--gold);}
+  .difficulty.selected{
+    color:#1a1508;
+    border-color:var(--gold-soft);
+    background:linear-gradient(145deg,var(--gold-soft),var(--gold));
+    font-weight:600;
+  }
+  .difficulty-description{
+    color:#918a7b;
+    font-size:.76rem;
+    min-height:1.1em;
+    margin:9px 0 0;
+  }
   /* ---------- Spielansicht ---------- */
   #game{
     display:none;
@@ -214,6 +255,15 @@
     transition:transform .12s ease, box-shadow .2s;
     will-change:transform;
   }
+  .piece.moving-piece{
+    position:absolute;
+    z-index:8;
+    pointer-events:none;
+    margin:0;
+    transition:none;
+    will-change:transform;
+  }
+  .piece.moving-piece::before{display:none;}
   .piece.p1{
     background:radial-gradient(circle at 35% 28%, #fffdf5, #e2d9bd 45%, #b9ac86 80%, #8d815e);
     box-shadow:0 4px 8px rgba(0,0,0,.6), inset 0 -3px 6px rgba(0,0,0,.25), inset 0 3px 6px rgba(255,255,255,.6);
@@ -274,8 +324,14 @@
 
   .last-move{
     position:absolute; inset:0;
-    border:2px solid rgba(201,162,39,.35);
+    border:2px solid rgba(201,162,39,.5);
+    background:rgba(201,162,39,.13);
     pointer-events:none;
+    animation:lastMoveReveal .85s ease-out both;
+  }
+  @keyframes lastMoveReveal{
+    from{background:rgba(230,201,107,.35); border-color:rgba(230,201,107,.9);}
+    to{background:rgba(201,162,39,.08); border-color:rgba(201,162,39,.35);}
   }
 
   .overlay{
@@ -304,6 +360,17 @@
   @media (max-width:520px){
     #menu h1{letter-spacing:.2em; text-indent:.2em;}
     .mode p{font-size:.78rem;}
+    .mode{padding:12px 15px;}
+    .modes{gap:10px;}
+    #startBtn{margin-top:20px;}
+    .difficulty-picker{margin-top:18px;}
+  }
+  @media (max-height:830px){
+    #menu{justify-content:flex-start;}
+    #menu .sub{margin-bottom:20px;}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .last-move,.hint,.capture-hint,.dot.active{animation:none;}
   }
 </style>
 </head>
@@ -325,16 +392,25 @@
       <h2>Checkers (Englisch)</h2>
       <p>8×8 Feld, 12 Steine pro Seite. Die Dame (King) zieht und schlägt nur ein Feld weit diagonal – vorwärts und rückwärts.</p>
     </div>
-    <div class="mode" data-mode="european">
+    <div class="mode selected" data-mode="european">
       <span class="tag">8×8</span>
       <h2>Europäisch</h2>
       <p>8×8 Feld, 12 Steine pro Seite. Die Dame zieht diagonal beliebig weit, muss beim Schlagen aber direkt hinter dem geschlagenen Stein landen.</p>
     </div>
   </div>
 
-  <!-- Zwei Start-Buttons: 2-Spieler-Modus und Computer-Gegner -->
-  <button id="startBtn">2-Spieler Spiel starten</button>
-  <button id="startCpuBtn">Spiel gegen Computer starten</button>
+  <!-- Two-player mode and computer with a choice of difficulty -->
+  <button id="startBtn" class="active">2-Spieler Spiel starten</button>
+  <div class="difficulty-picker" role="group" aria-label="Computer-Schwierigkeitsgrad">
+    <div class="difficulty-title">Computer-Schwierigkeitsgrad</div>
+    <div class="difficulty-options">
+      <button type="button" class="difficulty" data-difficulty="easy" aria-pressed="false">Leicht</button>
+      <button type="button" class="difficulty selected" data-difficulty="medium" aria-pressed="true">Mittel</button>
+      <button type="button" class="difficulty" data-difficulty="hard" aria-pressed="false">Schwer</button>
+    </div>
+    <p class="difficulty-description" id="difficultyDescription">Mittel: Plant einen Zug voraus und achtet auf Risiken.</p>
+  </div>
+  <button id="startCpuBtn" class="active">Spiel gegen Computer starten</button>
 </div>
 
 <!-- ===================== SPIEL ===================== -->
@@ -422,6 +498,8 @@ let state = {
   history: [],        // für Undo
   gameOver: false,
   lastMove: null,
+  animating: false,
+  aiDifficulty: 'medium',
   // --- Computer-Gegner ---
   vsComputer: false,  // true = gegen den Computer
   humanPlayer: 1,     // der menschliche Spieler ist immer Spieler 1
@@ -480,14 +558,14 @@ function isDark(r,c){
 // Achtung: Hier werden die Modus-Regeln angewandt – auch der Computer
 // bezieht seine Züge ausschließlich aus dieser Funktion, wodurch er
 // die Regeln der Dame (Reichweite, Landefeld beim Schlag) korrekt beachtet.
-function getAllMoves(player){
+function getAllMoves(player, board = state.board){
   const moves = [];
   const rules = state.rules;
   for(let r=0;r<state.size;r++){
     for(let c=0;c<state.size;c++){
-      const p = state.board?.[r]?.[c] ?? null;
+      const p = board?.[r]?.[c] ?? null;
       if(!p || p.player !== player) continue;
-      moves.push(...getMovesForPiece(r,c));
+      moves.push(...getMovesForPiece(r,c,board));
     }
   }
   // Schlagzwang: falls Schläge existieren, nur diese zurückgeben
@@ -503,8 +581,8 @@ function getAllMoves(player){
 //  - unlimitedKing:        Dame zieht beliebig weit
 //  - flyingKingCapture:    Dame springt über leere Felder zum Schlag
 //                          (sonst muss sie direkt hinter dem Gegner landen)
-function getMovesForPiece(r,c){
-  const p = state.board[r][c];
+function getMovesForPiece(r,c, board = state.board){
+  const p = board[r][c];
   if(!p) return [];
   const rules = state.rules;
   const moves = [];
@@ -517,18 +595,18 @@ function getMovesForPiece(r,c){
       let nr=r+dr, nc=c+dc;
       if(rules.unlimitedKing){
         // Dame gleitet beliebig weit über leere Felder
-        while(inBounds(nr,nc) && !state.board[nr][nc]){
+        while(inBounds(nr,nc) && !board[nr][nc]){
           moves.push({from:{r,c}, to:{r:nr,c:nc}, captures:[]});
           nr+=dr; nc+=dc;
         }
       } else {
         // King (Checkers) darf nur ein Feld weit ziehen
-        if(inBounds(nr,nc) && !state.board[nr][nc]){
+        if(inBounds(nr,nc) && !board[nr][nc]){
           moves.push({from:{r,c}, to:{r:nr,c:nc}, captures:[]});
         }
       }
       // Schläge in dieser Richtung
-      moves.push(...getKingCaptures(r,c,dr,dc));
+      moves.push(...getKingCaptures(r,c,dr,dc,board));
     }
   } else {
     // ----- einfacher Stein -----
@@ -537,7 +615,7 @@ function getMovesForPiece(r,c){
     const moveDirs = rules.backwardMove ? dirs : [[forward,-1],[forward,1]];
     for(const [dr,dc] of moveDirs){
       const nr=r+dr, nc=c+dc;
-      if(inBounds(nr,nc) && !state.board[nr][nc]){
+      if(inBounds(nr,nc) && !board[nr][nc]){
         moves.push({from:{r,c}, to:{r:nr,c:nc}, captures:[]});
       }
     }
@@ -547,8 +625,8 @@ function getMovesForPiece(r,c){
       const mr=r+dr, mc=c+dc;      // mittleres Feld (Gegner)
       const tr=r+2*dr, tc=c+2*dc;  // Zielfeld
       if(!inBounds(tr,tc)) continue;
-      const mid = state.board[mr][mc];
-      if(mid && mid.player !== p.player && !state.board[tr][tc]){
+      const mid = board[mr][mc];
+      if(mid && mid.player !== p.player && !board[tr][tc]){
         moves.push({from:{r,c}, to:{r:tr,c:tc}, captures:[{r:mr,c:mc}]});
       }
     }
@@ -562,22 +640,22 @@ function getMovesForPiece(r,c){
 //  - flyingKingCapture = false -> Landefeld direkt hinter dem Gegner (Europäisch)
 // Die while-Schleife mit dem "break" nach dem ersten gefundenen Gegner
 // verhindert, dass über zwei Gegner hinweg gesprungen wird.
-function getKingCaptures(r,c,dr,dc){
+function getKingCaptures(r,c,dr,dc, board = state.board){
   const rules = state.rules;
-  const p = state.board[r][c];
+  const p = board[r][c];
   const caps = [];
   let nr=r+dr, nc=c+dc;
   let foundEnemy = null;
 
   while(inBounds(nr,nc)){
-    const cell = state.board[nr][nc];
+    const cell = board[nr][nc];
     if(cell && cell.player === p.player) break; // eigener Stein blockiert
     if(cell && cell.player !== p.player){
       if(foundEnemy) break; // zweiter Gegner -> blockiert
       foundEnemy = {r:nr,c:nc};
       // Landefeld suchen
       let lr=nr+dr, lc=nc+dc;
-      while(inBounds(lr,lc) && !state.board[lr][lc]){
+      while(inBounds(lr,lc) && !board[lr][lc]){
         if(!rules.flyingKingCapture){
           // Europäisch: Dame muss direkt hinter dem Gegner landen
           caps.push({from:{r,c}, to:{r:lr,c:lc}, captures:[foundEnemy]});
@@ -593,6 +671,98 @@ function getKingCaptures(r,c,dr,dc){
     nr+=dr; nc+=dc;
   }
   return caps;
+}
+
+/* ---------- Visible move animations and safe cancellation ---------- */
+let gameVersion = 0;
+let aiTimer = null;
+let activeAnimationCleanup = null;
+
+function cancelPendingActions(){
+  gameVersion++;
+  clearTimeout(aiTimer);
+  aiTimer = null;
+  if(activeAnimationCleanup) activeAnimationCleanup();
+  activeAnimationCleanup = null;
+  state.animating = false;
+}
+
+function findCell(r,c){
+  return boardEl.querySelector(`.cell[data-r="${r}"][data-c="${c}"]`);
+}
+
+async function animateMove(move){
+  // Respect the user's OS accessibility setting.
+  if(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const fromCell = findCell(move.from.r, move.from.c);
+  const toCell = findCell(move.to.r, move.to.c);
+  const original = fromCell?.querySelector('.piece');
+  if(!original || !toCell || typeof original.animate !== 'function') return;
+
+  const fromBox = fromCell.getBoundingClientRect();
+  const toBox = toCell.getBoundingClientRect();
+  const pieceBox = original.getBoundingClientRect();
+  const boardBox = boardEl.getBoundingClientRect();
+  if(!pieceBox.width || !pieceBox.height) return;
+
+  const ghost = original.cloneNode(true);
+  ghost.classList.remove('selected','movable');
+  ghost.classList.add('moving-piece');
+  ghost.style.left = `${pieceBox.left - boardBox.left}px`;
+  ghost.style.top = `${pieceBox.top - boardBox.top}px`;
+  ghost.style.width = `${pieceBox.width}px`;
+  ghost.style.height = `${pieceBox.height}px`;
+  original.style.visibility = 'hidden';
+  boardEl.appendChild(ghost);
+
+  const dx = toBox.left - fromBox.left;
+  const dy = toBox.top - fromBox.top;
+  const squares = Math.max(Math.abs(move.to.r-move.from.r), Math.abs(move.to.c-move.from.c));
+  const duration = Math.min(730, 360 + squares * 50);
+  const animations = [ghost.animate([
+    {transform:'translate(0px, 0px) scale(1)'},
+    {transform:`translate(${dx}px, ${dy}px) scale(1.1)`, offset:.55},
+    {transform:`translate(${dx}px, ${dy}px) scale(1)`}
+  ], {duration, easing:'ease-in-out', fill:'forwards'})];
+
+  // Captured pieces are removed visually near the end of the jump.
+  for(const cap of move.captures){
+    const victim = findCell(cap.r,cap.c)?.querySelector('.piece');
+    if(victim) animations.push(victim.animate([
+      {opacity:1, transform:'scale(1)', offset:0},
+      {opacity:1, transform:'scale(1)', offset:.65},
+      {opacity:0, transform:'scale(.45)', offset:1}
+    ], {duration, easing:'ease-out', fill:'forwards'}));
+  }
+
+  const cleanup = () => {
+    animations.forEach(anim => anim.cancel());
+    ghost.remove();
+    original.style.visibility = '';
+  };
+  activeAnimationCleanup = cleanup;
+  try{
+    await Promise.all(animations.map(anim => anim.finished.catch(() => {})));
+  } finally {
+    cleanup();
+    if(activeAnimationCleanup === cleanup) activeAnimationCleanup = null;
+  }
+}
+
+async function playMove(move){
+  if(state.gameOver || state.animating) return;
+  state.animating = true;
+  const version = gameVersion;
+  try{
+    await animateMove(move);
+    if(version !== gameVersion) return;
+    applyMove(move);
+  } finally {
+    if(version === gameVersion){
+      state.animating = false;
+      maybeTriggerAI();
+    }
+  }
 }
 
 /* ---------- Zug ausführen ---------- */
@@ -654,9 +824,6 @@ function applyMove(move){
   render();
   updateTurnUI();
 
-  // Neu: Wenn jetzt der Computer am Zug ist (z.B. nach dem Zug des Menschen),
-  // wird der Computerzug angestoßen.
-  maybeTriggerAI();
 }
 
 /* ---------- Spielende prüfen ---------- */
@@ -784,7 +951,7 @@ function render(){
 
 /* ---------- Interaktion ---------- */
 boardEl.addEventListener('click', (e) => {
-  if(state.gameOver) return;
+  if(state.gameOver || state.animating) return;
   const cell = e.target.closest('.cell');
   if(!cell) return;
   const r = +cell.dataset.r;
@@ -793,6 +960,7 @@ boardEl.addEventListener('click', (e) => {
 });
 
 function handleTap(r,c){
+  if(state.animating || state.gameOver) return;
   // Während der Computer am Zug ist, dürfen keine Klicks verarbeitet werden.
   if(state.vsComputer && state.turn === state.aiPlayer) return;
 
@@ -807,7 +975,7 @@ function handleTap(r,c){
     // Zug auf Zielfeld?
     const move = state.legalMoves.find(m => m.to.r===r && m.to.c===c);
     if(move){
-      applyMove(move);
+      playMove(move);
       return;
     }
     return;
@@ -842,7 +1010,7 @@ function handleTap(r,c){
       m.to.r===r && m.to.c===c
     );
     if(move){
-      applyMove(move);
+      playMove(move);
       return;
     }
   }
@@ -854,108 +1022,176 @@ function handleTap(r,c){
 }
 
 /* ============================================================
-   Computer-Gegner (KI)
-   ============================================================
-   Der Computer spielt Spieler 2. Er nutzt exakt dieselbe
-   Zuggenerierung wie der Mensch (getAllMoves / getMovesForPiece),
-   kennt also automatisch:
-     - die Reichweite der Dame (unlimitedKing)
-     - die Landeregel beim Schlag (flyingKingCapture)
-     - Schlagzwang und Mehrfachschlag-Ketten
-   Die Auswahl erfolgt über eine einfache heuristische Bewertung.
-*/
+   Computer opponent: 3 distinct difficulty settings
+   Easy: random legal moves.
+   Medium: one-step tactics and an immediate danger check.
+   Hard: alpha-beta search, including complete capture chains.
+   All levels use the same move rules as the human player.
+   ============================================================ */
 
-// Startet den Computerzug, falls dieser am Zug ist.
-// Wird nach jedem menschlichen Zug (via applyMove -> maybeTriggerAI) aufgerufen.
 function maybeTriggerAI(){
-  if(state.vsComputer && !state.gameOver && !state.chainPiece
-     && state.turn === state.aiPlayer){
-    // Kurze Verzögerung, damit der Zug für den Menschen sichtbar wird
-    setTimeout(aiMove, 450);
-  }
+  if(!state.vsComputer || state.gameOver || state.animating || state.turn !== state.aiPlayer) return;
+  clearTimeout(aiTimer);
+  const version = gameVersion;
+  aiTimer = setTimeout(() => {
+    aiTimer = null;
+    if(version === gameVersion) aiMove();
+  }, state.chainPiece ? 400 : 520);
 }
 
-// Führt einen Computerzug aus. Bei Mehrfachschlägen ruft sich die
-// Funktion selbst erneut auf, bis die Kette abgeschlossen ist.
 function aiMove(){
-  if(state.gameOver) return;
-  if(!state.vsComputer || state.turn !== state.aiPlayer) return;
-
-  let moves;
-  if(state.chainPiece){
-    // Fortsetzung einer Schlagkette: nur der aktive Stein darf weiterschlagen
-    moves = getMovesForPiece(state.chainPiece.r, state.chainPiece.c)
-            .filter(m => m.captures.length > 0);
+  if(state.gameOver || state.animating || !state.vsComputer || state.turn !== state.aiPlayer) return;
+  const moves = availableMoves(state.board, state.aiPlayer, state.chainPiece);
+  if(!moves.length) return;
+  let move;
+  if(state.aiDifficulty === 'easy'){
+    move = moves[Math.floor(Math.random() * moves.length)];
+  } else if(state.aiDifficulty === 'hard'){
+    move = chooseHardMove(moves);
   } else {
-    // Normale Zugauswahl (inkl. Schlagzwang)
-    moves = getAllMoves(state.aiPlayer);
+    move = chooseMediumMove(moves);
   }
-
-  if(moves.length === 0) return; // Spielende wird von checkGameEnd behandelt
-
-  const move = pickBestMove(moves);
-  applyMove(move);
-
-  // Läuft nach dem Zug noch eine Schlagkette? -> Computer weitermachen lassen.
-  // (applyMove hat in diesem Fall state.chainPiece gesetzt und den Zug
-  //  noch nicht beendet, die "turn"-Variable bleibt beim Computer.)
-  if(!state.gameOver && state.chainPiece){
-    setTimeout(aiMove, 350);
-  }
+  playMove(move);
 }
 
-// Bewertet einen Zug heuristisch.
-// Höhere Werte = besser.
-function scoreMove(move){
+function availableMoves(board, player, chainPiece = null){
+  return chainPiece
+    ? getMovesForPiece(chainPiece.r, chainPiece.c, board).filter(m => m.captures.length > 0)
+    : getAllMoves(player, board);
+}
+
+// Return a new board; never change the real game state while searching.
+function simulateMove(board, move){
+  const result = board.map(row => row.slice());
+  const piece = {...result[move.from.r][move.from.c]};
+  result[move.from.r][move.from.c] = null;
+  result[move.to.r][move.to.c] = piece;
+  for(const cap of move.captures) result[cap.r][cap.c] = null;
+  if(!piece.king && move.to.r === (piece.player === 1 ? 0 : state.size-1)) piece.king = true;
+  const chain = move.captures.length && state.rules.continuationCapture &&
+    getMovesForPiece(move.to.r,move.to.c,result).some(m => m.captures.length > 0);
+  return {
+    board:result,
+    turn: chain ? piece.player : 3 - piece.player,
+    chainPiece: chain ? {...move.to} : null
+  };
+}
+
+function scoreMove(move, board = state.board){
+  const piece = board[move.from.r][move.from.c];
+  if(!piece) return -Infinity;
   let score = 0;
-  const p = state.board[move.from.r][move.from.c];
-  if(!p) return -Infinity;
-
-  // 1) Geschlagene Steine: Dame deutlich wertvoller als einfacher Stein
   for(const cap of move.captures){
-    const victim = state.board[cap.r][cap.c];
-    score += victim.king ? 300 : 100;
+    const victim = board[cap.r][cap.c];
+    score += victim?.king ? 300 : 100;
   }
-
-  // 2) Beförderung zur Dame: sehr wertvoll
-  const promoRow = p.player === 1 ? 0 : state.size-1;
-  if(!p.king && move.to.r === promoRow){
-    score += 250;
-  }
-
-  // 3) Vorwärtsbewegung einfacher Steine (Richtung Beförderung)
-  if(!p.king){
-    const adv = p.player === 1
-      ? (move.from.r - move.to.r)   // Spieler 1 zieht nach oben (kleineres r)
-      : (move.to.r - move.from.r);  // Spieler 2 zieht nach unten
-    score += adv * 3;
-  }
-
-  // 4) Zentrumsnähe leicht belohnen
-  const center = (state.size - 1) / 2;
-  score += (state.size/2 - Math.abs(move.to.c - center)) * 0.5;
-
-  // 5) Kleine Zufallskomponente, damit der Computer nicht immer
-  //    exakt denselben Zug wählt (weniger vorhersehbar).
-  score += Math.random() * 4;
-
+  const promoteRow = piece.player === 1 ? 0 : state.size - 1;
+  if(!piece.king && move.to.r === promoteRow) score += 240;
+  if(!piece.king) score += (piece.player === 1
+    ? move.from.r-move.to.r : move.to.r-move.from.r) * 3;
+  const center = (state.size - 1)/2;
+  score += (state.size/2 - Math.abs(move.to.c-center)) * 0.8;
   return score;
 }
 
-// Wählt aus mehreren Zügen den besten aus (mit Zufall bei Gleichstand).
-function pickBestMove(moves){
-  let best = -Infinity;
-  let bestMoves = [];
-  for(const m of moves){
-    const s = scoreMove(m);
-    if(s > best + 0.001){
-      best = s;
-      bestMoves = [m];
-    } else if(Math.abs(s - best) <= 0.001){
-      bestMoves.push(m);
-    }
+function evaluateBoard(board){
+  let score = 0;
+  const center = (state.size-1)/2;
+  for(let r=0;r<state.size;r++) for(let c=0;c<state.size;c++){
+    const p = board[r][c];
+    if(!p) continue;
+    const advancement = p.player === 1 ? state.size-1-r : r;
+    const worth = (p.king ? (state.rules.unlimitedKing ? 280 : 190) : 100)
+      + (p.king ? 0 : advancement * 3)
+      + (state.size/2 - Math.abs(c-center)) * 1.5;
+    score += (p.player === state.aiPlayer ? 1 : -1) * worth;
   }
-  return bestMoves[Math.floor(Math.random() * bestMoves.length)];
+  return score;
+}
+
+function chooseMediumMove(moves){
+  let best = -Infinity;
+  let candidates = [];
+  for(const move of moves){
+    const next = simulateMove(state.board,move);
+    let score = scoreMove(move) + evaluateBoard(next.board)*.12;
+    // Notice when an opponent could immediately capture the piece we just moved.
+    if(next.turn === state.humanPlayer){
+      const reply = getAllMoves(state.humanPlayer,next.board);
+      const threatened = reply.some(m => m.captures.some(cap =>
+        cap.r === move.to.r && cap.c === move.to.c));
+      if(threatened){
+        const p = next.board[move.to.r][move.to.c];
+        score -= p.king ? 205 : 85;
+      }
+    }
+    score += Math.random() * 9;
+    if(score > best){ best=score; candidates=[move]; }
+    else if(score === best) candidates.push(move);
+  }
+  return candidates[Math.floor(Math.random()*candidates.length)];
+}
+
+function orderedMoves(moves, board, limit){
+  const ordered = moves.map(move => ({move, priority:scoreMove(move,board)}))
+    .sort((a,b) => b.priority-a.priority);
+  return ordered.slice(0,limit).map(entry => entry.move);
+}
+
+function minimax(board, turn, chainPiece, depth, alpha, beta, ctx){
+  ctx.nodes++;
+  if(ctx.nodes > 9000 || performance.now() >= ctx.deadline){
+    ctx.aborted = true;
+    return evaluateBoard(board);
+  }
+  // Never stop halfway through a mandatory multiple-capture sequence.
+  if(depth <= 0 && !chainPiece) return evaluateBoard(board);
+  const moves = availableMoves(board,turn,chainPiece);
+  if(!moves.length) return turn === state.aiPlayer ? -100000-depth : 100000+depth;
+  const maximizing = turn === state.aiPlayer;
+  let best = maximizing ? -Infinity : Infinity;
+  for(const move of orderedMoves(moves,board,11)){
+    const next = simulateMove(board,move);
+    const nextDepth = depth - (next.turn !== turn ? 1 : 0);
+    const value = minimax(next.board,next.turn,next.chainPiece,nextDepth,alpha,beta,ctx);
+    if(ctx.aborted) break;
+    if(maximizing){
+      best = Math.max(best,value);
+      alpha = Math.max(alpha,best);
+    } else {
+      best = Math.min(best,value);
+      beta = Math.min(beta,best);
+    }
+    if(beta <= alpha) break;
+  }
+  return best;
+}
+
+function chooseHardMove(moves){
+  // Always have a valid fallback, even on slower phones.
+  let chosen = chooseMediumMove(moves);
+  const deadline = performance.now() + 620;
+  const pieceCount = state.board.flat().filter(Boolean).length;
+  const maxDepth = pieceCount <= 14 ? 4 : 3;
+  // Iterative deepening: only use complete search iterations.
+  for(let depth=2;depth<=maxDepth;depth++){
+    const ctx = {nodes:0,deadline,aborted:false};
+    let best = -Infinity;
+    let candidates = [];
+    let alpha = -Infinity;
+    for(const move of orderedMoves(moves,state.board,moves.length)){
+      const next = simulateMove(state.board,move);
+      const value = minimax(next.board,next.turn,next.chainPiece,
+        depth-(next.turn === state.aiPlayer ? 0 : 1),alpha,Infinity,ctx);
+      if(ctx.aborted) break;
+      if(value > best){best=value; candidates=[move];}
+      else if(value === best) candidates.push(move);
+      alpha = Math.max(alpha,best);
+    }
+    if(ctx.aborted || !candidates.length) break;
+    chosen = candidates[Math.floor(Math.random()*candidates.length)];
+  }
+  return chosen;
 }
 
 /* ---------- UI-Helfer ---------- */
@@ -964,7 +1200,7 @@ function updateTurnUI(){
   if(state.gameOver){
     text = 'Spiel beendet';
   } else if(state.vsComputer && state.turn === state.aiPlayer){
-    text = 'Computer am Zug';
+    text = `Computer (${DIFFICULTY_NAMES[state.aiDifficulty]}) am Zug`;
   } else if(state.vsComputer && state.turn === state.humanPlayer){
     text = 'Du bist am Zug';
   } else {
@@ -992,7 +1228,8 @@ function hideOverlay(){ overlay.classList.remove('show'); }
 // wieder am Zug ist (also Computerzug + ggf. eigene Schlagkette werden
 // mit zurückgenommen).
 document.getElementById('undoBtn').addEventListener('click', () => {
-  if(state.history.length === 0 || state.gameOver) return;
+  if(state.history.length === 0 || state.gameOver || state.animating) return;
+  cancelPendingActions();
 
   if(state.vsComputer){
     // Mehrere Schritte zurück, bis der menschliche Spieler am Zug ist
@@ -1021,6 +1258,11 @@ document.getElementById('undoBtn').addEventListener('click', () => {
     state.gameOver = false;
   }
 
+  // Restore the required selected piece when undoing a capture chain.
+  if(state.chainPiece){
+    state.selected = {...state.chainPiece};
+    state.legalMoves = availableMoves(state.board, state.turn, state.chainPiece);
+  }
   hideOverlay();
   render();
   updateTurnUI();
@@ -1037,6 +1279,7 @@ document.getElementById('againBtn').addEventListener('click', () => {
 });
 
 function backToMenu(){
+  cancelPendingActions();
   hideOverlay();
   document.getElementById('game').style.display = 'none';
   document.getElementById('menu').style.display = 'flex';
@@ -1045,10 +1288,27 @@ function backToMenu(){
 }
 
 /* ---------- Menü ---------- */
-let selectedMode = null;
+let selectedMode = 'european'; // Default if the player has not chosen anything.
 const modeEls = document.querySelectorAll('.mode');
 const startBtn = document.getElementById('startBtn');
 const startCpuBtn = document.getElementById('startCpuBtn');
+const DIFFICULTY_NAMES = {easy:'Leicht', medium:'Mittel', hard:'Schwer'};
+const DIFFICULTY_DESCRIPTIONS = {
+  easy:'Leicht: W\u00e4hlt zuf\u00e4llige erlaubte Z\u00fcge.',
+  medium:'Mittel: Plant einen Zug voraus und achtet auf Risiken.',
+  hard:'Schwer: Berechnet mehrere Z\u00fcge und Gegenz\u00fcge voraus.'
+};
+let selectedDifficulty = 'medium';
+const difficultyBtns = document.querySelectorAll('.difficulty');
+difficultyBtns.forEach(el => el.addEventListener('click', () => {
+  selectedDifficulty = el.dataset.difficulty;
+  difficultyBtns.forEach(btn => {
+    const chosen = btn === el;
+    btn.classList.toggle('selected',chosen);
+    btn.setAttribute('aria-pressed',String(chosen));
+  });
+  document.getElementById('difficultyDescription').textContent = DIFFICULTY_DESCRIPTIONS[selectedDifficulty];
+}));
 
 // Auswahl einer Spielvariante: beide Start-Buttons werden aktiv.
 modeEls.forEach(el => {
@@ -1074,10 +1334,12 @@ startCpuBtn.addEventListener('click', () => {
 // Startet ein Spiel.
 // vsComputer = true -> Spieler 2 wird vom Computer gesteuert.
 function startGame(modeKey, vsComputer = false){
+  cancelPendingActions();
   initBoard(modeKey);
   state.vsComputer = vsComputer;
   state.humanPlayer = 1;
   state.aiPlayer = 2;
+  state.aiDifficulty = selectedDifficulty;
 
   document.getElementById('menu').style.display = 'none';
   document.getElementById('game').style.display = 'flex';
